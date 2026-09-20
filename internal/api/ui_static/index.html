@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zone Cutover Simulator</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#27324a; --ink:#e6ecf7; --muted:#8ea0bf; --accent:#5aa9ff; --warn:#ffb454; --bad:#ff6b6b; --ok:#52d273; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 ui-sans-serif,system-ui,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header .muted { color:var(--muted); font-size:12px; }
+  main { display:grid; grid-template-columns:340px 1fr; gap:14px; padding:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .card h2 { font-size:13px; margin:0 0 8px; color:var(--accent); letter-spacing:.04em; text-transform:uppercase; }
+  textarea, input, select, button { font:inherit; }
+  textarea, input, select { width:100%; background:#0c111c; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:7px 8px; }
+  textarea { min-height:120px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  button { background:var(--accent); color:#08111f; border:0; border-radius:6px; padding:8px 12px; font-weight:600; cursor:pointer; }
+  button.secondary { background:#26324d; color:var(--ink); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .row > * { flex:1; }
+  .row > button, .row > .narrow { flex:0 0 auto; }
+  .col { display:flex; flex-direction:column; gap:14px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; border:1px solid var(--line); }
+  .auth { color:var(--ok); } .cache { color:var(--accent); } .neg { color:var(--warn); }
+  .sig-valid{color:var(--ok)} .sig-expired,.sig-not_yet_valid{color:var(--bad)} .sig-unsigned{color:var(--muted)} .sig-insecure{color:var(--warn)}
+  .blocked { color:var(--bad); } .ready{color:var(--ok)} .completed{color:var(--accent)} .rolled_back{color:var(--warn)}
+  #timeline { width:100%; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#0c111c; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:11px; max-height:260px; overflow:auto; }
+  .small { font-size:11px; color:var(--muted); }
+  .err { color:var(--bad); font-size:12px; white-space:pre-wrap; }
+  .ok-msg { color:var(--ok); font-size:12px; }
+  .finger { font-family:ui-monospace,monospace; font-size:10px; color:var(--muted); word-break:break-all; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; }
+  .phasebox { border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:8px; }
+  .legend span { margin-right:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DNS Zone 分阶段发布模拟器</h1>
+  <span class="muted">TTL · 权威不同步 · 递归缓存残留 · DNSSEC 时间窗</span>
+  <span id="status" class="small"></span>
+</header>
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>1 · 导入 Zone</h2>
+      <div class="row"><select id="zoneKind"><option value="current">current（当前）</option><option value="candidate">candidate（候选）</option></select></div>
+      <div class="row"><input id="zoneName" placeholder="zone origin，如 example.test" value="example.test" /></div>
+      <div class="row"><textarea id="zoneText" spellcheck="false"></textarea></div>
+      <div class="row"><button id="importBtn">解析并导入</button><button class="secondary" id="loadDemo">载入示例</button></div>
+      <div id="importMsg"></div>
+      <div class="row"><select id="currentZone"></select></div>
+      <div class="row"><select id="candidateZone"></select></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · 发布计划</h2>
+      <div class="row"><button id="diffPlan">按 current→candidate 生成计划</button></div>
+      <div id="planMeta" class="small"></div>
+      <div id="blockList"></div>
+      <div class="row"><button class="secondary" id="copyPlan">复制此计划到新文档</button></div>
+      <div class="row"><select id="planSelect"></select></div>
+    </section>
+
+    <section class="card">
+      <h2>3 · 模拟参数（显式种子）</h2>
+      <div class="row"><div>权威节点<input id="pAuth" type="number" value="3" min="1" max="8"/></div>
+        <div>递归节点<input id="pRecv" type="number" value="3" min="1" max="8"/></div></div>
+      <div class="row"><div>权威最大延迟(s)<input id="pAD" type="number" value="60"/></div>
+        <div>递归最大延迟(s)<input id="pRD" type="number" value="5"/></div></div>
+      <div class="row"><div>时钟偏差(s)<input id="pSkew" type="number" value="30"/></div>
+        <div>探针间隔(s)<input id="pGrid" type="number" value="30"/></div></div>
+      <div class="row"><div>种子<input id="pSeed" type="number" value="20260920"/></div></div>
+      <div class="row"><button id="simBtn">运行 / 复用模拟</button></div>
+      <div id="simMeta" class="small"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>时间轴 · 收敛</h2>
+      <input id="timeline" type="range" min="0" max="600" step="10" value="0" />
+      <div class="row small">
+        <span>t = <b id="tNow">0</b> s</span>
+        <span>所有节点最早收敛: <b id="convAll">–</b> s</span>
+        <span>稳定起点: <b id="stableFrom">–</b> s</span>
+      </div>
+      <div class="row small legend">
+        <span class="auth">● authoritative</span><span class="cache">● cache</span><span class="neg">● negative cache</span>
+      </div>
+      <div class="row"><select id="querySelect"></select></div>
+      <div id="nodeViews"></div>
+    </section>
+
+    <section class="card">
+      <h2>阶段与决策</h2>
+      <div id="phaseList"></div>
+    </section>
+
+    <section class="card">
+      <h2>计划 / 结果指纹与导出</h2>
+      <div id="fps" class="finger"></div>
+      <div class="row"><button class="secondary" id="exportBtn">导出完整证据</button></div>
+      <pre id="exportOut" hidden></pre>
+    </section>
+  </div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
