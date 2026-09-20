@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS 区域发布模拟器</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#28324a; --fg:#e7ecf5; --muted:#93a0b8; --accent:#5aa7ff; --ok:#3fbf7f; --warn:#e8a83d; --err:#ef6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  main { padding:18px 20px; display:grid; grid-template-columns: 340px 1fr; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .panel h2 { font-size:13px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  textarea, select, input { width:100%; background:#0d1322; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
+  textarea { min-height:120px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  button { background:var(--accent); color:#06101f; border:0; border-radius:6px; padding:7px 12px; font-weight:600; cursor:pointer; margin-top:9px; }
+  button.secondary { background:#28324a; color:var(--fg); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:700; }
+  .tag.draft { background:#33415c; color:#cdd8ee; }
+  .tag.ready { background:#1d3d33; color:var(--ok); }
+  .tag.committed { background:#16344f; color:var(--accent); }
+  .tag.rolled_back { background:#4a2530; color:var(--err); }
+  .tag.blocker { background:#4a2530; color:var(--err); }
+  .tag.warning { background:#473a1c; color:var(--warn); }
+  .tag.ok { background:#1d3d33; color:var(--ok); }
+  .muted { color:var(--muted); font-size:12px; }
+  .finding { border-left:3px solid var(--line); padding:6px 9px; margin:6px 0; background:#0d1322; border-radius:0 6px 6px 0; }
+  .finding.blocker { border-left-color:var(--err); }
+  .finding.warning { border-left-color:var(--warn); }
+  #timeline { grid-column:1 / -1; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .nodeGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin-top:10px; }
+  .node { background:#0d1322; border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .node h3 { margin:0 0 6px; font-size:13px; display:flex; justify-content:space-between; }
+  .src { font-size:11px; padding:1px 7px; border-radius:999px; }
+  .src.authority { background:#16344f; color:var(--accent); }
+  .src.cache { background:#1d3d33; color:var(--ok); }
+  .src.negative_cache { background:#473a1c; color:var(--warn); }
+  .sec-secure { color:var(--ok); } .sec-bogus { color:var(--err); } .sec-insecure { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  th, td { text-align:left; padding:5px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .scroll { max-height:260px; overflow:auto; }
+  .pillRow { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+  .fp { font-family:ui-monospace,monospace; font-size:10px; color:var(--muted); word-break:break-all; }
+  .toast { position:fixed; right:18px; bottom:18px; max-width:380px; background:#221b1b; border:1px solid var(--err); color:#ffd9d9; padding:10px 13px; border-radius:8px; display:none; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:960px){ main{grid-template-columns:1fr} .two{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<header>
+  <h1>DNS 区域发布模拟器</h1>
+  <button class="secondary" id="demoBtn">载入演示数据</button>
+  <span class="muted" id="clockLabel"></span>
+  <span style="flex:1"></span>
+  <span class="muted">页面固定 <code>http://127.0.0.1:5205</code> · 判定均在服务端</span>
+</header>
+
+<main>
+  <section class="panel" id="zonesPanel">
+    <h2>1 · 导入 zone</h2>
+    <div class="two">
+      <div>
+        <label>当前 zone（原始文本）</label>
+        <textarea id="curZone"></textarea>
+      </div>
+      <div>
+        <label>候选 zone（原始文本）</label>
+        <textarea id="candZone"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <button id="importBtn">解析并导入</button>
+      <button class="secondary" id="refreshZones">刷新列表</button>
+    </div>
+    <label>当前 zone</label>
+    <select id="curSelect"></select>
+    <label>候选 zone</label>
+    <select id="candSelect"></select>
+    <div class="fp" id="zoneFps"></div>
+  </section>
+
+  <section class="panel" id="planPanel">
+    <h2>2 · 分阶段发布计划</h2>
+    <div id="phaseEditor"></div>
+    <div class="row">
+      <button class="secondary" id="addPhase">增加阶段</button>
+      <button id="createPlanBtn">生成计划</button>
+    </div>
+    <label>已有计划</label>
+    <select id="planSelect"></select>
+    <div class="row">
+      <button class="secondary" id="validateBtn">提交前校验</button>
+      <button id="commitBtn">提交发布</button>
+      <button class="secondary" id="copyBtn">复制并改阶段</button>
+      <button class="secondary" id="rollbackBtn" style="background:#4a2530;color:#ffd1d1">发起回滚</button>
+    </div>
+    <div id="planStatus" style="margin-top:8px"></div>
+    <div id="findings" class="scroll"></div>
+  </section>
+
+  <section class="panel" id="simPanel">
+    <h2>3 · 确定性模拟</h2>
+    <div class="two">
+      <div>
+        <label>随机种子（显式）</label>
+        <input id="seed" type="number" value="42">
+        <label>探测查询（name/type，每行一条）</label>
+        <textarea id="probes" style="min-height:80px">www.example. A
+old.example. A</textarea>
+      </div>
+      <div>
+        <label>权威同步最大延迟（秒）</label>
+        <input id="maxDelay" type="number" value="60">
+        <label>查询间隔（秒）</label>
+        <input id="queryEvery" type="number" value="30">
+        <label>时间范围 horizon（秒）</label>
+        <input id="horizon" type="number" value="7200">
+        <label>回滚时刻（秒，0=不回滚）</label>
+        <input id="rollbackAt" type="number" value="0">
+      </div>
+    </div>
+    <div class="row">
+      <button id="runSimBtn">运行模拟</button>
+      <button class="secondary" id="exportBtn">导出完整证据</button>
+      <button class="secondary" id="adhocBtn">在当前时刻立即查询</button>
+    </div>
+    <div id="simMeta" class="fp"></div>
+  </section>
+
+  <section class="panel" id="eventsPanel">
+    <h2>操作事件（独立日志）</h2>
+    <div class="scroll" id="events"></div>
+    <button class="secondary" id="refreshEvents">刷新事件</button>
+  </section>
+
+  <section class="panel" id="timeline">
+    <h2>4 · 时间推进视图</h2>
+    <div class="row" style="align-items:baseline">
+      <strong id="timeNow">t = 0s</strong>
+      <span class="muted" id="wallNow"></span>
+      <span style="flex:1"></span>
+      <span class="muted">最早全员收敛：<b id="convAt">—</b></span>
+    </div>
+    <input type="range" id="slider" min="0" max="7200" step="10" value="0">
+    <div class="pillRow" id="probePills"></div>
+    <div class="nodeGrid" id="nodes"></div>
+    <h2 style="margin-top:16px">各节点时间线（所选查询）</h2>
+    <div class="scroll" id="series"></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
